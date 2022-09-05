@@ -23,7 +23,7 @@ on:
         type: string
 
 jobs:
-  build-on-image:
+  ${{ inputs.mint_version }}
     # name: ${{ inputs.mint_version }}
     runs-on: ubuntu-latest
     container:
