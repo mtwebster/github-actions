@@ -24,6 +24,7 @@ on:
 
 jobs:
   build-on-image:
+    name: ${{ inputs.mint_version }}
     runs-on: ubuntu-latest
     container:
       image: ${{ inputs.image }}
