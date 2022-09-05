@@ -16,7 +16,6 @@ on:
 
 jobs:
   mint21:
-    name: ""
     uses: mtwebster/github-actions/.github/workflows/build-on-image.yml@main
     with:
       display_name: Mint 21
@@ -25,7 +24,6 @@ jobs:
       commit_id: ${{ inputs.commit_id }}
       dependencies: ${{ inputs.dependencies }}
   lmde5:
-    name: ""
     uses: mtwebster/github-actions/.github/workflows/build-on-image.yml@main
     with:
       display_name: LMDE 5
