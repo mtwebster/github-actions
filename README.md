@@ -1,8 +1,62 @@
 # github-actions
 
+Reusable GitHub Actions workflows for building Linux Mint packages.
+
+## Usage
 
 - Place 'build.yml' in the repo under .github/workflows.
 - Add dependencies if needed.
+
+## Pattern Checker
+
+The pattern checker automatically scans pull request diffs for problematic code patterns (like deprecated functions) and posts warnings as PR comments.
+
+### Configuration
+
+To enable pattern checking in your repository's `build.yml`:
+
+```yaml
+jobs:
+  build:
+    uses: linuxmint/github-actions/.github/workflows/do-builds.yml@master
+    with:
+      commit_id: master
+      dependencies:
+      # Optional: Specify custom pattern config file
+      pattern_check_config: .github/workflows/custom-patterns.yml
+      # Optional: Limit to specific file extensions
+      pattern_check_extensions: .py,.c,.h,.js
+```
+
+### Default Patterns
+
+By default, the pattern checker detects:
+
+- **has_icon()** - Function that doesn't check legacy icon folders. Use `lookup_icon()` instead.
+
+### Custom Patterns
+
+Create a YAML file (e.g., `.github/workflows/custom-patterns.yml`) in your repository:
+
+```yaml
+patterns:
+  - name: deprecated_function
+    regex: '\bold_function\s*\('
+    message: "Warning: old_function() is deprecated. Use new_function() instead."
+    severity: warning
+    extensions:
+      - .py
+      - .c
+
+settings:
+  exclude_patterns:
+    - "*.po"
+    - "ChangeLog"
+  max_findings_per_file: 10
+  fail_on_match: false
+```
+
+Pattern checker is enabled by default for Mint 22 builds and only runs on pull requests.
 
 ### Status for Linux Mint:
 

@@ -40,6 +40,21 @@ on:
         type: string
         required: false
         default: ""
+      pattern_check:
+        description: "Whether to run pattern checking during the job"
+        type: boolean
+        required: false
+        default: false
+      pattern_check_config:
+        description: "Path to custom pattern check config file"
+        type: string
+        required: false
+        default: ""
+      pattern_check_extensions:
+        description: "Comma-separated list of file extensions to check"
+        type: string
+        required: false
+        default: ""
 
 jobs:
   build-on-image:
@@ -70,9 +85,18 @@ jobs:
         with:
           # only show the typo detected but don't make workflow to fail
           only_warn: 1
-          skip: ${{ inputs.codespell_ignore_files_list }}  
+          skip: ${{ inputs.codespell_ignore_files_list }}
           # word to exclude must be always lowercase as must be same of the codespell dictionary
           ignore_words_list: ${{ inputs.codespell_ignore_words_list }}
+
+      - name: Check for Red-Flag Patterns
+        if: ${{ inputs.pattern_check }}
+        uses: linuxmint/github-actions/pattern-checker@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          config_file: ${{ inputs.pattern_check_config }}
+          file_extensions: ${{ inputs.pattern_check_extensions }}
+          only_warn: true
 
       - name: Update build environment
         run: |

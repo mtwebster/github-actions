@@ -1,0 +1,337 @@
+name: 'Pattern Checker'
+description: 'Check PR diffs for red-flag patterns and post warnings'
+
+inputs:
+    github_token:
+        description: 'GitHub token for API access'
+        required: true
+    config_file:
+        description: 'Path to custom pattern configuration file'
+        required: false
+        default: ''
+    file_extensions:
+        description: 'Comma-separated list of file extensions to check (e.g., .py,.c,.h)'
+        required: false
+        default: ''
+    only_warn:
+        description: 'Only warn, do not fail the workflow'
+        required: false
+        default: 'true'
+
+runs:
+    using: 'composite'
+    steps:
+        - run: |
+            import sys
+            import os
+            import json
+            import re
+            import yaml
+            from pathlib import Path
+            try:
+                import requests
+            except ImportError:
+                os.system("pip3 install requests pyyaml --quiet")
+                import requests
+
+            class PatternChecker:
+                def __init__(self, github_token, config_file, file_extensions, only_warn):
+                    self.github_token = github_token
+                    self.config_file = config_file
+                    self.file_extensions = file_extensions
+                    self.only_warn = only_warn.lower() == 'true'
+                    self.findings = []
+                    self.config = None
+
+                def load_config(self):
+                    """Load YAML configuration file"""
+                    # Determine config file path
+                    if self.config_file and self.config_file.strip():
+                        config_path = Path(self.config_file)
+                    else:
+                        # Use default config from action directory
+                        # GITHUB_ACTION_PATH is set by GitHub Actions to the action's directory
+                        action_path = os.environ.get('GITHUB_ACTION_PATH', '')
+                        if action_path:
+                            config_path = Path(action_path) / 'patterns.yml'
+                        else:
+                            config_path = Path('pattern-checker/patterns.yml')
+
+                    if not config_path.exists():
+                        print(f"::error::Config file not found: {config_path}")
+                        sys.exit(1 if not self.only_warn else 0)
+
+                    with open(config_path, 'r') as f:
+                        self.config = yaml.safe_load(f)
+
+                    # Validate config
+                    if not self.config or 'patterns' not in self.config:
+                        print("::error::Invalid config file: missing 'patterns' section")
+                        sys.exit(1 if not self.only_warn else 0)
+
+                    print(f"Loaded {len(self.config['patterns'])} patterns from {config_path}")
+
+                def get_event_info(self):
+                    """Extract event info from GitHub event"""
+                    event_path = os.environ.get('GITHUB_EVENT_PATH')
+                    if not event_path or not os.path.exists(event_path):
+                        print("::error::GITHUB_EVENT_PATH not found or invalid")
+                        sys.exit(1 if not self.only_warn else 0)
+
+                    with open(event_path, 'r') as f:
+                        event = json.load(f)
+
+                    repository = os.environ.get('GITHUB_REPOSITORY')
+                    event_name = os.environ.get('GITHUB_EVENT_NAME')
+
+                    # Handle pull request events
+                    if 'pull_request' in event:
+                        return {
+                            'type': 'pull_request',
+                            'repository': repository,
+                            'pr_number': event['pull_request']['number'],
+                            'sha': event['pull_request']['head']['sha']
+                        }
+
+                    # Handle push events
+                    elif event_name == 'push':
+                        return {
+                            'type': 'push',
+                            'repository': repository,
+                            'sha': event.get('after', os.environ.get('GITHUB_SHA'))
+                        }
+
+                    # Other events - just log
+                    else:
+                        return {
+                            'type': 'other',
+                            'repository': repository,
+                            'sha': os.environ.get('GITHUB_SHA')
+                        }
+
+                def get_changed_files(self, event_info):
+                    """Get changed files from GitHub API based on event type"""
+                    headers = {
+                        'Authorization': f'token {self.github_token}',
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+
+                    if event_info['type'] == 'pull_request':
+                        url = f"https://api.github.com/repos/{event_info['repository']}/pulls/{event_info['pr_number']}/files"
+                    elif event_info['type'] == 'push':
+                        url = f"https://api.github.com/repos/{event_info['repository']}/commits/{event_info['sha']}"
+                        response = requests.get(url, headers=headers)
+                        if response.status_code != 200:
+                            print(f"::error::Failed to get commit info: {response.status_code}")
+                            sys.exit(1 if not self.only_warn else 0)
+                        commit_data = response.json()
+                        return commit_data.get('files', [])
+                    else:
+                        print("::notice::Event type not supported for file checking")
+                        return []
+
+                    response = requests.get(url, headers=headers)
+                    if response.status_code != 200:
+                        print(f"::error::Failed to get changed files: {response.status_code}")
+                        sys.exit(1 if not self.only_warn else 0)
+
+                    return response.json()
+
+                def should_check_file(self, filename, pattern):
+                    """Check if file should be checked based on extension and exclusions"""
+                    # Check exclusion patterns
+                    settings = self.config.get('settings', {})
+                    exclude_patterns = settings.get('exclude_patterns', [])
+
+                    for exclude_pattern in exclude_patterns:
+                        if self.match_pattern(filename, exclude_pattern):
+                            return False
+
+                    # Check file extension
+                    extensions = pattern.get('extensions', [])
+                    if not extensions:
+                        return True
+
+                    # Override from input parameter
+                    if self.file_extensions and self.file_extensions.strip():
+                        extensions = [ext.strip() for ext in self.file_extensions.split(',')]
+
+                    file_ext = os.path.splitext(filename)[1]
+                    return file_ext in extensions
+
+                def match_pattern(self, filename, pattern):
+                    """Simple glob pattern matching"""
+                    import fnmatch
+                    return fnmatch.fnmatch(filename, pattern)
+
+                def find_patterns_in_file(self, file_data, pattern):
+                    """Search for pattern in file changes"""
+                    if not file_data.get('patch'):
+                        return []
+
+                    findings = []
+                    patch = file_data['patch']
+                    lines = patch.split('\n')
+
+                    current_line_num = 0
+                    regex = re.compile(pattern['regex'])
+                    max_findings = self.config.get('settings', {}).get('max_findings_per_file', 10)
+
+                    for line in lines:
+                        # Track line numbers from diff headers
+                        if line.startswith('@@'):
+                            # Parse line number from diff header: @@ -old,len +new,len @@
+                            match = re.search(r'\+(\d+)', line)
+                            if match:
+                                current_line_num = int(match.group(1)) - 1
+                        elif line.startswith('+') and not line.startswith('+++'):
+                            # This is an added line
+                            current_line_num += 1
+                            line_content = line[1:]  # Remove the '+'
+
+                            if regex.search(line_content):
+                                if len(findings) < max_findings:
+                                    findings.append({
+                                        'line_num': current_line_num,
+                                        'line_content': line_content,
+                                        'pattern': pattern
+                                    })
+                        elif not line.startswith('-'):
+                            # Context line (not removed)
+                            current_line_num += 1
+
+                    return findings
+
+                def check_files(self, pr_files):
+                    """Check all PR files for patterns"""
+                    for file_data in pr_files:
+                        filename = file_data['filename']
+
+                        for pattern in self.config['patterns']:
+                            if not self.should_check_file(filename, pattern):
+                                continue
+
+                            findings = self.find_patterns_in_file(file_data, pattern)
+                            if findings:
+                                for finding in findings:
+                                    self.findings.append({
+                                        'filename': filename,
+                                        'line_num': finding['line_num'],
+                                        'line_content': finding['line_content'],
+                                        'pattern_name': pattern['name'],
+                                        'message': pattern.get('message', 'Pattern detected'),
+                                        'severity': pattern.get('severity', 'warning')
+                                    })
+
+                def format_comment(self):
+                    """Format findings into markdown comment"""
+                    if not self.findings:
+                        return None
+
+                    comment = "## 🔍 Pattern Check Results\n\n"
+                    comment += f"Found {len(self.findings)} potential issue(s) in this PR:\n\n"
+
+                    # Group findings by pattern
+                    by_pattern = {}
+                    for finding in self.findings:
+                        pattern_name = finding['pattern_name']
+                        if pattern_name not in by_pattern:
+                            by_pattern[pattern_name] = []
+                        by_pattern[pattern_name].append(finding)
+
+                    # Format each pattern group
+                    for pattern_name, pattern_findings in by_pattern.items():
+                        severity_emoji = "⚠️" if pattern_findings[0]['severity'] == 'warning' else "ℹ️"
+                        comment += f"### {severity_emoji} {pattern_name}\n\n"
+
+                        for finding in pattern_findings:
+                            comment += f"**{finding['filename']}:{finding['line_num']}**\n"
+                            comment += f"```\n{finding['line_content'].strip()}\n```\n"
+                            comment += f"{finding['message']}\n\n"
+
+                    comment += "---\n"
+                    comment += "*This is an automated check. Patterns can be configured in the workflow.*\n"
+
+                    return comment
+
+                def post_comment(self, event_info, comment):
+                    """Post comment to PR or commit"""
+                    headers = {
+                        'Authorization': f'token {self.github_token}',
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                    data = {'body': comment}
+
+                    if event_info['type'] == 'pull_request':
+                        url = f"https://api.github.com/repos/{event_info['repository']}/issues/{event_info['pr_number']}/comments"
+                        success_msg = "Posted pattern check results to PR"
+                    elif event_info['type'] == 'push':
+                        url = f"https://api.github.com/repos/{event_info['repository']}/commits/{event_info['sha']}/comments"
+                        success_msg = "Posted pattern check results to commit"
+                    else:
+                        print("::notice::Cannot post comment for this event type")
+                        print(comment)
+                        return
+
+                    response = requests.post(url, headers=headers, json=data)
+                    if response.status_code != 201:
+                        print(f"::error::Failed to post comment: {response.status_code}")
+                        print(f"::error::Response: {response.text}")
+                        sys.exit(1 if not self.only_warn else 0)
+
+                    print(f"::notice::{success_msg}")
+
+                def run(self):
+                    """Main execution"""
+                    print("Starting pattern check...")
+
+                    # Load configuration
+                    self.load_config()
+
+                    # Get event info
+                    event_info = self.get_event_info()
+                    event_type = event_info['type']
+
+                    if event_type == 'pull_request':
+                        print(f"Checking PR #{event_info['pr_number']} in {event_info['repository']}")
+                    elif event_type == 'push':
+                        print(f"Checking commit {event_info['sha'][:7]} in {event_info['repository']}")
+                    else:
+                        print(f"Checking {event_type} event in {event_info['repository']}")
+
+                    # Get changed files
+                    changed_files = self.get_changed_files(event_info)
+                    print(f"Found {len(changed_files)} changed files")
+
+                    # Check files for patterns
+                    self.check_files(changed_files)
+
+                    # Report findings
+                    if self.findings:
+                        print(f"::warning::Found {len(self.findings)} pattern matches")
+                        comment = self.format_comment()
+                        if comment:
+                            self.post_comment(event_info, comment)
+
+                        if not self.only_warn:
+                            sys.exit(1)
+                    else:
+                        print("::notice::No pattern matches found")
+
+                    sys.exit(0)
+
+            # Run the checker
+            if __name__ == "__main__":
+                checker = PatternChecker(
+                    github_token=os.environ.get('PATTERN_CHECK_TOKEN'),
+                    config_file=os.environ.get('PATTERN_CHECK_CONFIG'),
+                    file_extensions=os.environ.get('PATTERN_CHECK_EXTENSIONS'),
+                    only_warn=os.environ.get('PATTERN_CHECK_ONLY_WARN', 'true')
+                )
+                checker.run()
+          env:
+            PATTERN_CHECK_TOKEN: ${{ inputs.github_token }}
+            PATTERN_CHECK_CONFIG: ${{ inputs.config_file }}
+            PATTERN_CHECK_EXTENSIONS: ${{ inputs.file_extensions }}
+            PATTERN_CHECK_ONLY_WARN: ${{ inputs.only_warn }}
+          shell: python3 {0}

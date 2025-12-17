@@ -1,0 +1,37 @@
+# Pattern Checker Configuration
+# Define patterns to detect in pull request diffs
+
+patterns:
+    - name: has_icon_function
+      regex: '\bhas_icon\s*\('
+      message: |
+          Warning: Using `has_icon()` can cause issues with icon detection.
+
+          The `has_icon()` method only checks theme folders and does not check extra, legacy folders.
+          Consider using `lookup_icon()` instead, which checks all icon locations properly.
+
+          See: https://github.com/linuxmint/cinnamon/issues/13270
+      severity: warning
+      extensions:
+          - .py
+          - .c
+          - .h
+          - .js
+          - .vala
+
+settings:
+    # File patterns to always exclude from checking
+    exclude_patterns:
+        - "*.po"
+        - "*.pot"
+        - "ChangeLog"
+        - "NEWS"
+        - "*.md"
+        - "*.svg"
+        - "*.desktop"
+
+    # Maximum number of findings to report per file (prevents spam)
+    max_findings_per_file: 10
+
+    # Whether to fail the workflow on findings (recommended: false)
+    fail_on_match: false

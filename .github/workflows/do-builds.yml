@@ -21,6 +21,14 @@ on:
         description: 'A comma separated list of words to ignore with codespell.'
         required: false
         type: string
+      pattern_check_config:
+        description: 'Path to custom pattern check configuration file.'
+        required: false
+        type: string
+      pattern_check_extensions:
+        description: 'Comma-separated list of file extensions to check.'
+        required: false
+        type: string
 
 jobs:
   build:
@@ -31,10 +39,12 @@ jobs:
             image: linuxmintd/mint22-amd64
             display_name: Mint 22
             codespell: true
+            pattern_check: true
           - mint_version: lmde7
             image: linuxmintd/lmde7-amd64
             display_name: LMDE 7
             codespell: false
+            pattern_check: false
     uses: linuxmint/github-actions/.github/workflows/build-on-image.yml@master
     with:
       display_name: ${{ matrix.display_name }}
@@ -47,6 +57,10 @@ jobs:
       codespell: ${{ matrix.codespell }}
       codespell_ignore_files_list: ChangeLog,*.desktop,*.po,*.svg,LINGUAS,NEWS,${{ inputs.codespell_ignore_files_list }}
       codespell_ignore_words_list: gir,${{ inputs.codespell_ignore_words_list }}
+
+      pattern_check: ${{ matrix.pattern_check }}
+      pattern_check_config: ${{ inputs.pattern_check_config }}
+      pattern_check_extensions: ${{ inputs.pattern_check_extensions }}
 
 
 
